@@ -65,6 +65,9 @@ LAST_NAMES = [
     "lewis", "martin", "martinez", "miller", "mitchell", "moore", "morgan", "parker", "smith", "taylor"
 ]
 
+# Lưu trữ số lượng email cuối cùng được yêu cầu (key: chat_id, value: quantity)
+last_quantity = {}
+
 # Hàm lưu email_storage vào file JSON
 def save_email_storage():
     try:
@@ -225,11 +228,14 @@ async def gm_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         if quantity <= 0 or quantity > 10:
             await update.message.reply_text("Số lượng phải từ 1 đến 10.")
             return
+        last_quantity[chat_id] = quantity  # Lưu số lượng cho chat_id
         result, emails = create_mailslurp_account(chat_id, quantity)
         keyboard = [
             [InlineKeyboardButton(f"📧 Get code {email['email']}", callback_data=f".gc {email['email']}")]
             for email in emails
         ]
+        # Thêm nút "Generate More"
+        keyboard.append([InlineKeyboardButton("🔄 Generate More", callback_data=f".gm_more {quantity}")])
         reply_markup = InlineKeyboardMarkup(keyboard) if keyboard else None
         await update.message.reply_text(result, parse_mode="HTML", reply_markup=reply_markup)
     except ValueError:
@@ -299,6 +305,26 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         context.bot_data["gc_tasks"].append(asyncio.create_task(
             process_gc_task_callback(query, context, chat_id, email)
         ))
+    
+    elif callback_data.startswith(".gm_more"):
+        try:
+            quantity = int(callback_data.split(" ")[1])
+            if quantity <= 0 or quantity > 10:
+                await query.message.reply_text("Số lượng phải từ 1 đến 10.")
+                return
+            last_quantity[chat_id] = quantity  # Cập nhật số lượng
+            await query.message.reply_text("Mail generating...")
+            result, emails = create_mailslurp_account(chat_id, quantity)
+            keyboard = [
+                [InlineKeyboardButton(f"📧 Get code {email['email']}", callback_data=f".gc {email['email']}")]
+                for email in emails
+            ]
+            # Thêm lại nút "Generate More"
+            keyboard.append([InlineKeyboardButton("🔄 Generate More", callback_data=f".gm_more {quantity}")])
+            reply_markup = InlineKeyboardMarkup(keyboard) if keyboard else None
+            await query.message.reply_text(result, parse_mode="HTML", reply_markup=reply_markup)
+        except ValueError:
+            await query.message.reply_text("Lỗi: Số lượng không hợp lệ.")
 
 # Hàm xử lý tác vụ .gc từ callback
 async def process_gc_task_callback(query, context, chat_id, email):
@@ -320,11 +346,14 @@ async def handle_dot_commands(update: Update, context: ContextTypes.DEFAULT_TYPE
             if quantity <= 0 or quantity > 10:
                 await update.message.reply_text("Số lượng phải từ 1 đến 10.")
                 return
+            last_quantity[chat_id] = quantity  # Lưu số lượng cho chat_id
             result, emails = create_mailslurp_account(chat_id, quantity)
             keyboard = [
                 [InlineKeyboardButton(f"📧 Get code {email['email']}", callback_data=f".gc {email['email']}")]
                 for email in emails
             ]
+            # Thêm nút "Generate More"
+            keyboard.append([InlineKeyboardButton("🔄 Generate More", callback_data=f".gm_more {quantity}")])
             reply_markup = InlineKeyboardMarkup(keyboard) if keyboard else None
             await update.message.reply_text(result, parse_mode="HTML", reply_markup=reply_markup)
         except ValueError:
