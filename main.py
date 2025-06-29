@@ -9,6 +9,7 @@ import os
 import json
 from datetime import datetime, timezone
 from bs4 import BeautifulSoup
+from telegram.error import NetworkError
 
 # Lưu trữ email có mã code (key: chat_id, value: [{"email": email, "code": code, "create_at": timestamp}])
 emails_with_codes = {}
@@ -16,14 +17,15 @@ emails_with_codes = {}
 # Thay YOUR_BOT_TOKEN bằng token từ BotFather
 TOKEN = "7515268728:AAELI0s5QUCK-Yj3uIkAmXgIumFYXcmEpL4"
 
-# Cấu hình Temp-Mail API
-TEMPMAIL_API_KEY = "tempmail.20250623.yb3yvj0im9am9cwkyxovyd34k2zchy3mtg7cc71htoq67ml6"
-TEMPMAIL_API_URL = "https://api.tempmail.lol"
+# Cấu hình renewmemail.store
+RENEWME_API_KEY = "PIJGiMwvxgqRFkp25KYV"
+RENEWME_API_BASE = "https://renewmemail.store/api"
+HEADERS = {"Authorization": f"Bearer {RENEWME_API_KEY}"}
 
-# Domain được phép sử dụng (dựa trên Temp-Mail)
-ALLOWED_DOMAIN = "tempmail.lol"
+# Domain được phép sử dụng
+ALLOWED_DOMAIN = "renewmemail.store"
 
-# Lưu trữ email đã tạo (key: chat_id, value: [{"email": email, "token": token}])
+# Lưu trữ email đã tạo (key: chat_id, value: [{"email": email, "inbox_id": inbox_id}])
 email_storage = {}
 
 # File để lưu email_storage
@@ -88,11 +90,10 @@ def load_email_storage():
         print(f"Lỗi khi tải email_storage: {str(e)}")
         email_storage = {}
 
-# Hàm tạo tài khoản Temp-Mail
-def create_temp_mail_account(chat_id, quantity):
+# Hàm tạo tài khoản renewmemail.store
+def create_renewmemail_account(chat_id, quantity):
     print(f"Đang tạo {quantity} email cho chat_id: {chat_id}")
     try:
-        headers = {"Authorization": f"Bearer {TEMPMAIL_API_KEY}"}
         emails = []
         time_start = time.time()
         
@@ -107,40 +108,42 @@ def create_temp_mail_account(chat_id, quantity):
                 
                 try:
                     response = requests.post(
-                        f"{TEMPMAIL_API_URL}/generate",
-                        json={"address": f"{email_name}@{ALLOWED_DOMAIN}"},
-                        headers=headers
+                        f"{RENEWME_API_BASE}/inbox",
+                        headers=HEADERS,
+                        json={"email": f"{email_name}@{ALLOWED_DOMAIN}"}
                     )
-                    if response.status_code == 200:
-                        data = response.json()
-                        emails.append({"email": data["address"], "token": data["token"]})
-                        break
-                    else:
-                        print(f"Không tạo được email {email_name}: {response.text}")
-                        continue
-                except Exception as e:
+                    response.raise_for_status()
+                    data = response.json()
+                    emails.append({
+                        "email": data.get("email", f"{email_name}@{ALLOWED_DOMAIN}"),
+                        "inbox_id": data.get("inbox_id", email_name)
+                    })
+                    break
+                except requests.RequestException as e:
                     print(f"Không tạo được email {email_name}: {str(e)}")
                     continue
 
         email_storage[chat_id] = emails
         save_email_storage()
         if not emails:
-            return f"Không tạo được email nào do lỗi Temp-Mail. Vui lòng kiểm tra API key hoặc domain {ALLOWED_DOMAIN}.", []
+            return f"Không tạo được email nào do lỗi renewmemail.store. Vui lòng kiểm tra API key hoặc domain {ALLOWED_DOMAIN}.", []
         result = "\n".join([f"Generated Mail {i+1}\n<code>{e['email']}</code>" for i, e in enumerate(emails)])
         return result, emails
     except Exception as e:
         return f"Lỗi khi tạo email: {str(e)}", []
 
-# Hàm kiểm tra email tồn tại
-def check_email_exists(email_address):
+# Hàm lấy inbox_id từ email address
+def get_inbox_id_by_email(email_address):
     try:
-        headers = {"Authorization": f"Bearer {TEMPMAIL_API_KEY}"}
-        response = requests.get(f"{TEMPMAIL_API_URL}/inbox/{email_address}", headers=headers)
-        if response.status_code == 200:
-            return response.json()
-        return None
-    except Exception as e:
-        print(f"Không kiểm tra được email {email_address}: {str(e)}")
+        response = requests.get(
+            f"{RENEWME_API_BASE}/inbox/{email_address}",
+            headers=HEADERS
+        )
+        response.raise_for_status()
+        data = response.json()
+        return data.get("inbox_id")
+    except requests.RequestException as e:
+        print(f"Không lấy được inbox_id cho {email_address}: {str(e)}")
         return None
 
 # Hàm lấy mã OTP từ email
@@ -150,40 +153,43 @@ async def get_code_from_email(chat_id, email_address):
     if not email_address.endswith(f"@{ALLOWED_DOMAIN}"):
         return f"Email: <code>{email_address}</code>\nLỗi: Chỉ hỗ trợ email với domain @{ALLOWED_DOMAIN}."
 
-    token = None
+    inbox_id = None
     if chat_id in email_storage and email_storage[chat_id]:
         for email in email_storage[chat_id]:
             if email["email"].lower() == email_address.lower():
-                token = email["token"]
+                inbox_id = email["inbox_id"]
                 break
     
-    if not token:
-        email_data = check_email_exists(email_address)
-        if email_data and "token" in email_data:
-            token = email_data["token"]
+    if not inbox_id:
+        inbox_id = get_inbox_id_by_email(email_address)
+        if inbox_id:
             if chat_id not in email_storage:
                 email_storage[chat_id] = []
-            email_storage[chat_id].append({"email": email_address, "token": token})
+            email_storage[chat_id].append({"email": email_address, "inbox_id": inbox_id})
             save_email_storage()
         else:
-            return f"Email: <code>{email_address}</code>\nKhông tìm thấy email. Vui lòng tạo email mới bằng .gm hoặc kiểm tra email tồn tại trên Temp-Mail."
+            return f"Email: <code>{email_address}</code>\nKhông tìm thấy inbox. Vui lòng tạo email mới bằng .gm hoặc kiểm tra email tồn tại trên renewmemail.store."
 
-    headers = {"Authorization": f"Bearer {TEMPMAIL_API_KEY}"}
     max_attempts = 24
     attempt = 0
 
     while attempt < max_attempts:
         try:
             response = requests.get(
-                f"{TEMPMAIL_API_URL}/inbox/{email_address}",
-                headers=headers
+                f"{RENEWME_API_BASE}/inbox/{email_address}/emails",
+                headers=HEADERS,
+                params={"sort": "DESC", "size": 10}
             )
-            if response.status_code == 200:
-                emails = response.json().get("emails", [])
+            response.raise_for_status()
+            emails = response.json().get("content", [])
+            
+            if emails:
                 for email in emails:
-                    if any(title.lower() in email.get("subject", "").lower() for title in VERIFICATION_CODE_TITLES) and "adobe.com" in email.get("from", "").lower():
-                        content = email.get("html") or email.get("text", "")
-                        print(f"Nội dung email: Subject: {email.get('subject')}, Text: {content[:500]}...")
+                    subject = email.get("subject", "")
+                    sender = email.get("sender", {}).get("email_address", "")
+                    if any(title.lower() in subject.lower() for title in VERIFICATION_CODE_TITLES) and "adobe.com" in sender.lower():
+                        content = email.get("body", "")
+                        print(f"Nội dung email: Subject: {subject}, Text: {content[:500]}...")
 
                         soup = BeautifulSoup(content, 'html.parser')
                         strong_tags = soup.find_all('strong', style=re.compile(r'font-size:\s*28px'))
@@ -200,7 +206,7 @@ async def get_code_from_email(chat_id, email_address):
                             code = match.group(2) if match else "Không tìm thấy mã trong email"
                         
                         print(f"Mã OTP tìm được: {code}")
-                        received_time = datetime.fromisoformat(email.get("date").replace("Z", "+00:00"))
+                        received_time = datetime.fromisoformat(email.get("created_at").replace("Z", "+00:00"))
                         current_time = datetime.now(timezone.utc)
                         received_minutes = int((current_time - received_time).total_seconds() / 60)
 
@@ -219,12 +225,14 @@ async def get_code_from_email(chat_id, email_address):
                 attempt += 1
                 await asyncio.sleep(5)
             else:
-                return f"Email: <code>{email_address}</code>\nLỗi khi lấy nội dung email: {response.text}"
-        except Exception as e:
+                print(f"Không có email nào, thử lại sau 5 giây (lần {attempt + 1}/{max_attempts})")
+                attempt += 1
+                await asyncio.sleep(5)
+        except requests.RequestException as e:
             print(f"Lỗi khi lấy email: {str(e)}")
             return f"Email: <code>{email_address}</code>\nLỗi khi lấy nội dung email: {str(e)}"
 
-    return f"Email: <code>{email_address}</code>\nChưa có mã xác minh nào được gửi. Vui lòng kiểm tra Temp-Mail thủ công."
+    return f"Email: <code>{email_address}</code>\nChưa có mã xác minh nào được gửi. Vui lòng kiểm tra renewmemail.store thủ công."
 
 # Hàm xử lý lệnh /gm
 async def gm_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -236,7 +244,7 @@ async def gm_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
             await update.message.reply_text("Số lượng phải từ 1 đến 10.")
             return
         last_quantity[chat_id] = quantity  # Lưu số lượng cho chat_id
-        result, emails = create_temp_mail_account(chat_id, quantity)
+        result, emails = create_renewmemail_account(chat_id, quantity)
         keyboard = [
             [InlineKeyboardButton(f"📧 Get code {email['email']}", callback_data=f".gc {email['email']}")]
             for email in emails
@@ -267,6 +275,34 @@ async def process_gc_task(update: Update, context: ContextTypes.DEFAULT_TYPE, ch
     result = await get_code_from_email(chat_id, email)
     await context.bot.send_message(chat_id=chat_id, text=result, parse_mode="HTML")
 
+# Hàm xử lý lệnh .getmail
+async def getmail_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    chat_id = update.message.chat_id
+    filename = f"emails_with_codes_{chat_id}.txt"
+    
+    if chat_id not in emails_with_codes or not emails_with_codes[chat_id]:
+        await update.message.reply_text("Không có email hoặc mã OTP nào để xuất.")
+        return
+
+    try:
+        with open(filename, "w", encoding="utf-8") as f:
+            for entry in emails_with_codes[chat_id]:
+                email = entry['email']
+                code = entry['code']
+                create_at = entry['create_at'].isoformat()
+                f.write(f"{email},{code},{create_at}\n")
+
+        with open(filename, "rb") as f:
+            await context.bot.send_document(
+                chat_id=chat_id,
+                document=f,
+                filename=filename,
+                caption="Danh sách email và mã OTP"
+            )
+        os.remove(filename)
+    except Exception as e:
+        await update.message.reply_text(f"Lỗi khi xuất file: {str(e)}")
+
 # Hàm xử lý callback từ inline buttons
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
@@ -293,7 +329,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 return
             last_quantity[chat_id] = quantity  # Cập nhật số lượng
             await query.message.reply_text("Mail generating...")
-            result, emails = create_temp_mail_account(chat_id, quantity)
+            result, emails = create_renewmemail_account(chat_id, quantity)
             keyboard = [
                 [InlineKeyboardButton(f"📧 Get code {email['email']}", callback_data=f".gc {email['email']}")]
                 for email in emails
@@ -311,7 +347,7 @@ async def process_gc_task_callback(query, context, chat_id, email):
     result = await get_code_from_email(chat_id, email)
     await context.bot.send_message(chat_id=chat_id, text=result, parse_mode="HTML")
 
-# Hàm xử lý lệnh .gm, .gc
+# Hàm xử lý lệnh .gm, .gc, .getmail
 async def handle_dot_commands(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat_id = update.message.chat_id
     message_text = update.message.text.strip()
@@ -326,7 +362,7 @@ async def handle_dot_commands(update: Update, context: ContextTypes.DEFAULT_TYPE
                 await update.message.reply_text("Số lượng phải từ 1 đến 10.")
                 return
             last_quantity[chat_id] = quantity  # Lưu số lượng cho chat_id
-            result, emails = create_temp_mail_account(chat_id, quantity)
+            result, emails = create_renewmemail_account(chat_id, quantity)
             keyboard = [
                 [InlineKeyboardButton(f"📧 Get code {email['email']}", callback_data=f".gc {email['email']}")]
                 for email in emails
@@ -350,6 +386,9 @@ async def handle_dot_commands(update: Update, context: ContextTypes.DEFAULT_TYPE
             process_gc_task(update, context, chat_id, email)
         ))
 
+    elif message_text.startswith(".getmail"):
+        await getmail_command(update, context)
+
 # Hàm khởi động bot
 def main():
     try:
@@ -357,6 +396,7 @@ def main():
         application = Application.builder().token(TOKEN).connect_timeout(10).read_timeout(10).build()
         application.add_handler(CommandHandler("gm", gm_command))
         application.add_handler(CommandHandler("getcode", getcode_command))
+        application.add_handler(CommandHandler("getmail", getmail_command))
         application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_dot_commands))
         application.add_handler(CallbackQueryHandler(button_callback))
         print("Bot đang khởi động...")
